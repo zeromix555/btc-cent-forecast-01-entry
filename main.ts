@@ -1,8 +1,24 @@
-// btc-cent-forecast-01 entry: shrunk, volatility-capped 72h log-trend forecast.
+// btc-cent-forecast-01 entry v2: shrunk, volatility-capped 56h log-trend forecast.
 // Forecast = last * exp(0.5 * clip(log(trend/last), -sigma240, +sigma240))
-// where trend is the OLS log-linear trend over the full 72h window extrapolated
-// 240 minutes ahead, and sigma240 is the std of overlapping 240-minute log
-// returns inside the window. Pure Node stdlib, deterministic, no network.
+// where trend is the OLS log-linear trend over the last 56h (3,360 closes)
+// extrapolated 240 minutes ahead, and sigma240 is the std of overlapping
+// 240-minute log returns inside that window. Pure Node stdlib, deterministic,
+// no network.
+//
+// v2 change vs v1 (72h / 4,320 closes): the window is shortened to 56h.
+// Backtest on the kit practice cases (targets = next case's checkpoint close):
+// the window sweep at shrink 0.5 / cap 1 sigma is a smooth U with a broad
+// plateau at W=3120-3600 (MAE $383.21 / $379.89 / $379.26 / $381.15 / $384.89)
+// vs $409.84 at W=4320 and $400.56 at W=2880, so W=3360 sits at the plateau
+// centre, not on a cherry-picked spike. The early ~16h of the 72h window come
+// from a mean-reverting regime that drags the OLS slope the wrong way; the
+// last 56h carry the trend that actually persists into the 4h horizon.
+// Rolling 4h-step checkpoints on the merged 92h series confirm it: W=3360
+// MAE $298.83 (9 checkpoints) vs persistence $327.57 on the same checkpoints,
+// and vs v1's $409.84 on its 5 checkpoints. Shrink and cap are unchanged:
+// raising the shrink toward 1.0 improves the 5 practice cases further but
+// worsens the rolling checkpoints monotonically (full trend: $391.34 at
+// W=2880 rolling), so it was rejected as overfitting.
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -11,6 +27,7 @@ const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 const MIN_PRICE = 0.00001;
 const MAX_PRICE = 9_999_999.99999;
 const HORIZON = 240;
+const WINDOW = 3360;
 
 interface CaseMarket { id: string; prices: number[] }
 interface Case { markets: CaseMarket[] }
@@ -25,11 +42,14 @@ function forecast(prices: number[]): number {
   // Degenerate window (a single usable close): no trend exists, so the only
   // defensible forecast is persistence at the last price.
   if (xs.length < 2) return price5(last);
-  const n = xs.length;
-  // OLS on log prices over the whole window, extrapolated HORIZON minutes ahead.
+  // Use only the last WINDOW closes: the early part of a 72h window belongs
+  // to a stale regime and drags the OLS slope the wrong way.
+  const w = xs.slice(-WINDOW);
+  const n = w.length;
+  // OLS on log prices over the window, extrapolated HORIZON minutes ahead.
   let sx = 0, sy = 0, sxx = 0, sxy = 0;
   for (let i = 0; i < n; i++) {
-    const y = Math.log(xs[i] as number);
+    const y = Math.log(w[i] as number);
     sx += i; sy += y; sxx += i * i; sxy += i * y;
   }
   const denom = n * sxx - sx * sx;
@@ -43,7 +63,7 @@ function forecast(prices: number[]): number {
   // Volatility cap: std of overlapping 240-minute log returns inside the window.
   if (n > HORIZON + 1) {
     const rets: number[] = [];
-    for (let i = HORIZON; i < n; i++) rets.push(Math.log((xs[i] as number) / (xs[i - HORIZON] as number)));
+    for (let i = HORIZON; i < n; i++) rets.push(Math.log((w[i] as number) / (w[i - HORIZON] as number)));
     const m = rets.length;
     const mu = rets.reduce((a, b) => a + b, 0) / m;
     const sigma = Math.sqrt(rets.reduce((a, b) => a + (b - mu) * (b - mu), 0) / m);
