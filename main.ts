@@ -22,6 +22,9 @@ function forecast(prices: number[]): number {
   for (const p of prices) if (typeof p === 'number' && Number.isFinite(p) && p > 0) xs.push(p);
   if (xs.length === 0) throw new Error('no usable prices');
   const last = xs[xs.length - 1] as number;
+  // Degenerate window (a single usable close): no trend exists, so the only
+  // defensible forecast is persistence at the last price.
+  if (xs.length < 2) return price5(last);
   const n = xs.length;
   // OLS on log prices over the whole window, extrapolated HORIZON minutes ahead.
   let sx = 0, sy = 0, sxx = 0, sxy = 0;
@@ -47,9 +50,9 @@ function forecast(prices: number[]): number {
     if (sigma > 0 && Number.isFinite(sigma)) move = Math.max(-sigma, Math.min(sigma, move));
   }
   // Shrink the (capped) trend move halfway toward persistence.
-// Halfway is the sweet spot found in backtesting: full trend overshoots in
-// regime flips, zero shrinkage is just persistence and leaves the -13% MAE
-// gain on the table.
+  // Halfway is the sweet spot found in backtesting: full trend overshoots in
+  // regime flips, zero shrinkage is just persistence and leaves the -13% MAE
+  // gain on the table.
   return price5(last * Math.exp(0.5 * move));
 }
 
